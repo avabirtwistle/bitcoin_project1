@@ -3,6 +3,7 @@
 
 int main(int argc, char *argv[]) {
     command_input input;
+
     if (!read_input(&input, argc, argv)) {
         return EXIT_FAILURE;
     }
@@ -17,30 +18,26 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    FILE *file = open_file("keypair.json", "w+");
-    if (find_wallet(file, keypair) != 0) {
-        //create
-        fprintf(stderr, "Failed to find wallet in the specified file.\n");
+    if (generate_vanity_wallet(keypair, input.vanity_prefix) != 0) {
+        fprintf(stderr, "Failed to generate vanity wallet.\n");
         free(keypair);
-        fclose(file);
         return EXIT_FAILURE;
     }
-    fclose(file);
 
     printf("Private Key: ");
     for (int i = 0; i < PRIVATE_KEY_SIZE; i++) {
         printf("%02x", keypair->private_key[i]);
     }
-    printf("\n");       
+    printf("\n");
+
     printf("Public Key: ");
     for (int i = 0; i < PUBLIC_KEY_SIZE; i++) {
         printf("%02x", keypair->public_key[i]);
     }
     printf("\n");
+
     printf("Address: %s\n", keypair->address);
 
-    // Use the keypair as needed...
-
-    free(keypair); // Don't forget to free the allocated memory
+    free(keypair);
     return EXIT_SUCCESS;
 }

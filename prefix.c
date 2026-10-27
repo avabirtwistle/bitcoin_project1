@@ -166,38 +166,89 @@ static int base58_encode(const uint8_t *input, char *output);
         BN_free(number);
             return 0;
     }
-
     
+    /**
+     * Convert a public key to a Bitcoin address.
+     * @param public_key The public key to convert.
+     * @param address The buffer to store the resulting address (must be at least 36 bytes).
+     * @return 0 on success, -1 on failure.
+     */
     int public_key_to_address(const uint8_t public_key[PUBLIC_KEY_SIZE], char address[ADDRESS_SIZE + 1]) {
         uint8_t public_key_hash[PUBLIC_KEY_HASH_SIZE];
-        uint8_t versioned_hash[VERSIONED_HASH_SIZE];
-        uint8_t checksum[CHECKSUM_SIZE];
+        uint8_t payload[PAYLOAD_SIZE];
+        uint8_t first_checksum_hash[HASH_SIZE];
+        uint8_t second_checksum_hash[HASH_SIZE];
+        size_t bytes_written = 0;
 
-        // Hash the public key to get the public key hash
+        // Calculate RIPEMD-160(SHA-256(public key)).
         if (hash_public_key(public_key, public_key_hash) != 0) {
-            return -1; // Error during hashing
+            return -1;
         }
 
-        // Prepend version byte (0x00 for Bitcoin mainnet)
-        versioned_hash[0] = 0x00;
-        memcpy(versioned_hash + 1, public_key_hash, PUBLIC_KEY_HASH_SIZE);
+        //[version byte][public-key hash]
+        payload[0] = 0x00;
+        memcpy(payload + 1, public_key_hash, PUBLIC_KEY_HASH_SIZE);
 
-        // Calculate checksum (first 4 bytes of double SHA-256)
-        if (EVP_Q_digest(NULL, "SHA256", NULL, versioned_hash, VERSIONED_HASH_SIZE, checksum, NULL) != 1) {
-            return -1; // Error during first SHA-256 hashing
-        }
-        if (EVP_Q_digest(NULL, "SHA256", NULL, checksum, HASH_SIZE, checksum, NULL) != 1) {
-            return -1; // Error during second SHA-256 hashing
+        // first SHA-256 hash of the 21 versioned bytes
+        if (EVP_Q_digest(NULL, "SHA256", NULL, payload, VERSIONED_HASH_SIZE, first_checksum_hash, &bytes_written) != 1 || bytes_written != HASH_SIZE) {
+            return -1;
         }
 
-        // Append the first 4 bytes of the checksum to the versioned hash
-        memcpy(versioned_hash + VERSIONED_HASH_SIZE, checksum, CHECKSUM_SIZE);
-
-        // Encode the result in Base58
-        if (base58_encode(versioned_hash, address) != 0) {
-            return -1; // Error during Base58 encoding
+        // hash first result again
+        if (EVP_Q_digest(NULL, "SHA256", NULL, first_checksum_hash, HASH_SIZE, second_checksum_hash, &bytes_written) != 1 || bytes_written != HASH_SIZE) {
+            return -1;
         }
 
-        return 0; // Success
+        // append the first four bytes of the second hash
+        memcpy(payload + VERSIONED_HASH_SIZE, second_checksum_hash, CHECKSUM_SIZE);
 
+        // convert the completed 25-byte payload to Base58
+        if (base58_encode(payload, address) != 0) {
+            return -1;
+        }
+
+        return 0;
     }
+
+    /* 
+     * Check if the given address matches the given prefix.
+     * @param address The address to check.
+     * @param prefix The prefix to match.
+     * @return 1 if the address matches the prefix, 0 otherwise.
+     */
+    int address_matches_prefix(const char *address, const char *prefix) {
+        for (int i = 0; i < 3; i++) {
+            char address_character = toupper((unsigned char)address[i + 1]);
+            char prefix_character = toupper((unsigned char)prefix[i]);
+
+            if (address_character != prefix_character) {
+                return 0;
+            }
+        }
+
+        return 1;
+    }
+
+    /**
+     * Generate a new wallet with a public key and address that matches the given prefix.
+     * @param wallet The wallet to generate.
+     * @param prefix The prefix to match.
+     * @return 0 on success, -1 on failure.
+     */
+    int generate_vanity_wallet(wallet_t *wallet, const char *prefix) {
+    do {
+        //make new keypair
+        if (generate_keypair(wallet) != 0) {
+            return -1;
+        }
+
+        //create address for keypair
+        if (public_key_to_address(wallet->public_key, wallet->address) != 0) {
+            return -1;
+        }
+    } 
+    // keep generating until we get a match
+    while(address_matches_prefix(wallet->address, prefix) == 0);
+
+    return 0;
+}
