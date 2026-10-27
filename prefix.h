@@ -10,6 +10,7 @@
 #include <openssl/evp.h>
 //definitions for sizes 
 #define PRIVATE_KEY_SIZE 32
+#define HASH_SIZE 32
 #define PUBLIC_KEY_SIZE 33
 #define PUBLIC_KEY_HASH_SIZE 20
 #define VERSIONED_HASH_SIZE 21

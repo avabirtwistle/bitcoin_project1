@@ -1,5 +1,8 @@
 #include "prefix.h"
 
+//helpers 
+static int hash_public_key(const uint8_t public_key[PUBLIC_KEY_SIZE], uint8_t public_key_hash[PUBLIC_KEY_HASH_SIZE]);
+static int base58_encode(const uint8_t *input, char *output);
     /**
      * Finds a wallet in the specified file.
      * @param filename The name of the file to search.
@@ -97,5 +100,104 @@
             return result;
     }
 
+    int hash_public_key(const uint8_t public_key[PUBLIC_KEY_SIZE], uint8_t public_key_hash[PUBLIC_KEY_HASH_SIZE]) {
+        uint8_t sha256_hash[HASH_SIZE]; //where to put hash result
+        size_t bytes_written = 0;
+
+        //hash the public key using SHA-256, return 1 for success 0 for error
+        if(EVP_Q_digest(NULL, "SHA256", NULL, public_key, PUBLIC_KEY_SIZE, sha256_hash, &bytes_written) != 1 || bytes_written != HASH_SIZE) {
+            return -1; // Error during SHA-256 hashing
+        }
+
+        //check the output length
+        if(bytes_written != sizeof(sha256_hash)) {
+            return -1; // Unexpected output length
+        }
+
+        //hash the result of the SHA-256 hash using RIPEMD-160
+        if(EVP_Q_digest(NULL, "RIPEMD160", NULL, sha256_hash, sizeof(sha256_hash), public_key_hash, &bytes_written) != 1 || bytes_written != PUBLIC_KEY_HASH_SIZE) {
+            return -1; // Error during RIPEMD-160 hashing
+        }
+
+        return 0; // Success
+    }
     
 
+    int base58_encode(const uint8_t *input, char *output) {
+        // Base58 alphabet
+        const char alphabet[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        size_t leading_zeroes = 0;
+        size_t position = ADDRESS_SIZE;
+
+        //convert the input to a BIGNUM
+        BIGNUM *number = BN_bin2bn(input, PAYLOAD_SIZE, NULL);
+        if (number == NULL) {
+            return -1;
+        }
+
+        //count the leading 0 
+        while (leading_zeroes < PAYLOAD_SIZE && input[leading_zeroes] == 0x00) {
+            leading_zeroes++;
+        }
+
+        // put new line at end
+        output[position] = '\0';
+        // repeated division by 58 to convert to base58, stops when we reach 0's
+        while (!BN_is_zero(number)) { // repeated division by 58 
+            BN_ULONG remainder = BN_div_word(number, 58);
+            if (remainder == (BN_ULONG)-1) {
+                BN_free(number);
+                return -1;
+            }
+
+            position--;//right to left
+            output[position] = alphabet[remainder]; // map remainder to Base58 character
+        }
+
+        // start at the index of the first non-zero character and add leading '1's for each leading zero byte in the input
+        while (leading_zeroes > 0) {
+            position--;
+            output[position] = '1';
+            leading_zeroes--;
+        }
+
+        //complete address is put at begining
+        memmove(output, output + position, ADDRESS_SIZE - position + 1);
+        BN_free(number);
+            return 0;
+    }
+
+    
+    int public_key_to_address(const uint8_t public_key[PUBLIC_KEY_SIZE], char address[ADDRESS_SIZE + 1]) {
+        uint8_t public_key_hash[PUBLIC_KEY_HASH_SIZE];
+        uint8_t versioned_hash[VERSIONED_HASH_SIZE];
+        uint8_t checksum[CHECKSUM_SIZE];
+
+        // Hash the public key to get the public key hash
+        if (hash_public_key(public_key, public_key_hash) != 0) {
+            return -1; // Error during hashing
+        }
+
+        // Prepend version byte (0x00 for Bitcoin mainnet)
+        versioned_hash[0] = 0x00;
+        memcpy(versioned_hash + 1, public_key_hash, PUBLIC_KEY_HASH_SIZE);
+
+        // Calculate checksum (first 4 bytes of double SHA-256)
+        if (EVP_Q_digest(NULL, "SHA256", NULL, versioned_hash, VERSIONED_HASH_SIZE, checksum, NULL) != 1) {
+            return -1; // Error during first SHA-256 hashing
+        }
+        if (EVP_Q_digest(NULL, "SHA256", NULL, checksum, HASH_SIZE, checksum, NULL) != 1) {
+            return -1; // Error during second SHA-256 hashing
+        }
+
+        // Append the first 4 bytes of the checksum to the versioned hash
+        memcpy(versioned_hash + VERSIONED_HASH_SIZE, checksum, CHECKSUM_SIZE);
+
+        // Encode the result in Base58
+        if (base58_encode(versioned_hash, address) != 0) {
+            return -1; // Error during Base58 encoding
+        }
+
+        return 0; // Success
+
+    }
