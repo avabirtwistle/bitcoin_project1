@@ -236,19 +236,54 @@ static int base58_encode(const uint8_t *input, char *output);
      * @return 0 on success, -1 on failure.
      */
     int generate_vanity_wallet(wallet_t *wallet, const char *prefix) {
-    do {
-        //make new keypair
-        if (generate_keypair(wallet) != 0) {
+        do {
+            //make new keypair
+            if (generate_keypair(wallet) != 0) {
+                return -1;
+            }
+
+            //create address for keypair
+            if (public_key_to_address(wallet->public_key, wallet->address) != 0) {
+                return -1;
+            }
+        } 
+        // keep generating until we get a match
+        while(address_matches_prefix(wallet->address, prefix) == 0);
+
+        return 0;
+    }
+
+    /**
+     * saves a new wallet with a public key and address to the file. file must be close externally
+     * @param file - pointer to the file to write to 
+     * @param wallet - pointer to the wallet containing the new info
+     * @return 0 on success, -1 on failure.
+     */
+    int save_wallet(FILE *file, const wallet_t *wallet){
+        char private_key_hex[(PRIVATE_KEY_SIZE << 1) + 1]; 
+        char public_key_hex[(PUBLIC_KEY_SIZE << 1) + 1];
+
+        //use the openssl inverse function to convertthe priv and public keys to hex strings
+        if(OPENSSL_buf2hexstr_ex(private_key_hex, sizeof(private_key_hex), NULL, wallet->private_key, PRIVATE_KEY_SIZE, '\0') != 1) {
+            fprintf(stderr, "Failed to convert private key to hex.\n");
             return -1;
         }
 
-        //create address for keypair
-        if (public_key_to_address(wallet->public_key, wallet->address) != 0) {
+        //convert 33 bytes into 55 hex character for public key
+        if(OPENSSL_buf2hexstr_ex(public_key_hex, sizeof(public_key_hex), NULL, wallet-> public_key, PUBLIC_KEY_SIZE, '\0')!= 1){
             return -1;
         }
-    } 
-    // keep generating until we get a match
-    while(address_matches_prefix(wallet->address, prefix) == 0);
 
-    return 0;
-}
+        //write the public and private key to the JSON file using the right format
+        if (fprintf(file, "{\n"
+                            "  \"private_key\": \"%s\",\n"
+                            "  \"public_key\": \"%s\",\n"
+                            "  \"address\": \"%s\"\n"
+                            "}\n",
+                            private_key_hex,
+                            public_key_hex,
+                            wallet->address) < 0) {
+                return -1;
+            }
+        return 0;
+    }

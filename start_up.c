@@ -34,14 +34,8 @@ int read_input(command_input *input, int argc, char *argv[]) {
  */
 FILE *open_file(const char *filename, const char *mode) {
     FILE *file = fopen(filename, mode);
-    if (file == NULL) {
-        perror("Error opening file");
-        exit(EXIT_FAILURE);
-    }   
 
-    if (fseek(file, 0, SEEK_END) != 0) {
-        perror("fseek");
-        fclose(file);
+    if (file == NULL) {
         return NULL;
     }
 

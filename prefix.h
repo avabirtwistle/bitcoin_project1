@@ -26,7 +26,8 @@ typedef struct{
     char address[ADDRESS_SIZE + 1]; // +1 for null terminator
 } wallet_t;
 
-int find_wallet(FILE *file, wallet_t *keypair);
+int find_wallet(FILE *file,  wallet_t *keypair);
+int save_wallet(FILE *file, const wallet_t *wallet);
 int generate_keypair(wallet_t *wallet);
 int public_key_to_address(const uint8_t public_key[33], char address[36]);
 int address_matches_prefix(const char *address, const char *prefix);
