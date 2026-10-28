@@ -1,3 +1,6 @@
+#ifndef PREFIX_H
+#define PREFIX_H
+
 #include <ctype.h>
 #include <cjson/cJSON.h>
 #include <stdio.h>
@@ -32,3 +35,5 @@ int generate_keypair(wallet_t *wallet);
 int public_key_to_address(const uint8_t public_key[33], char address[36]);
 int address_matches_prefix(const char *address, const char *prefix);
 int generate_vanity_wallet(wallet_t *wallet, const char *prefix);
+
+# endif

@@ -13,8 +13,8 @@ LDLIBS = -lcjson -lcrypto -lreadline
 
 TARGET = blockchain
 
-SOURCES = main.c prefix.c start_up.c
-HEADERS = prefix.h start_up.h
+SOURCES = main.c prefix.c start_up.c block.c 
+HEADERS = prefix.h start_up.h block.h
 
 $(TARGET): $(SOURCES) $(HEADERS)
 	$(CC) $(CFLAGS) $(SOURCES) -o $(TARGET) $(LDFLAGS) $(LDLIBS)

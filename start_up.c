@@ -26,18 +26,3 @@ int read_input(command_input *input, int argc, char *argv[]) {
     return 1;
 }
 
-/*
- * Opens a file with the specified filename and mode.
- * @param filename The name of the file to open.
- * @param mode The mode in which to open the file.
- * @return A pointer to the opened file, or NULL if an error occurs.
- */
-FILE *open_file(const char *filename, const char *mode) {
-    FILE *file = fopen(filename, mode);
-
-    if (file == NULL) {
-        return NULL;
-    }
-
-    return file;
-}
