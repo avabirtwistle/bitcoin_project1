@@ -8,4 +8,5 @@ typedef struct{
     char *node;
 } command_input;
 
+
 int read_input(command_input *input, int argc, char *argv[]);
