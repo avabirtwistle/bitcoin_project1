@@ -1,6 +1,6 @@
 # AI Usage Log
 
-I used OpenAI Codex while working on this assignment. I used it to explain parts of C and OpenSSL that I did not understand, review my code, help find errors, and suggest ways to connect different parts of the program. I checked and adjusted the suggestions before using them. I also input the assignment requirements to ensure that I did not miss any required parts of the implementation. 
+I used OpenAI Codex while working on this assignment. I used it to explain parts of C and OpenSSL that I did not understand, review my code, help find errors, and suggest ways to connect different parts of the program. I checked and adjusted the suggestions before using them. I also input the assignment requirements to ensure that I did not miss any required parts of the implementation. For the readme, it was used to format and help write some information.
 
 **Tool:** OpenAI Codex  
 **Date used:** October 2026
