@@ -1,6 +1,8 @@
 #include "start_up.h"
 #include "prefix.h"
 #include "block.h"
+#include "network.h"
+
 
 int main(int argc, char *argv[]) {
     //hold the input from the user
@@ -18,7 +20,7 @@ int main(int argc, char *argv[]) {
 
     printf("Vanity Prefix: %s\n", input.vanity_prefix);
     printf("Difficulty: %d\n", input.difficulty);
-    printf("Node: %s\n", input.node);
+    printf("Config Path: %s\n", input.config_path);
 
     wallet_t *keypair = malloc(sizeof(wallet_t));
     if (keypair == NULL) {

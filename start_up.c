@@ -21,7 +21,7 @@ int read_input(command_input *input, int argc, char *argv[]) {
 
     input->vanity_prefix = vanity_prefix;
     input->difficulty =  atoi(argv[6]);
-    input->node = argv[2];
+    input->config_path = argv[2];
 
     return 1;
 }

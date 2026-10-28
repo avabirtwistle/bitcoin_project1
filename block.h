@@ -60,5 +60,11 @@ void free_block_data(block_t *block);
 int add_pending_message(message_list_t *pending, const char *message);
 void free_message_list(message_list_t *list);
 
+
+//network related block
+int serialize_block_for_network(const block_t *block, char **output, size_t *output_length);
+int deserialize_block_from_network(const char *input,size_t input_length,block_t *block);
+int validate_next_block(const block_t *block,const block_t *previous, int difficulty);
+
 #endif // BLOCK_H
 

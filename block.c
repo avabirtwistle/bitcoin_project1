@@ -342,6 +342,136 @@ int mine_one_block(block_t *block, int difficulty){
     }
 }
 
+//network related block
+int serialize_block_for_network(const block_t *block, char **output, size_t *output_length){
+    if (block == NULL || output == NULL || output_length == NULL) {
+        return -1; // Invalid input
+    }
+     serialize_block_data(block, output, output_length);
+
+}
+
+int deserialize_block_from_network(const char *serialized_block, size_t serialized_block_len, block_t *block){
+    if (serialized_block == NULL || block == NULL) {
+        return -1;
+    }
+
+    // Initialize the block structure to zero
+    memset(block, 0, sizeof(*block));
+
+    //allocate buffer to hold null terminated input string
+    char *buffer = malloc(serialized_block_len + 1);
+    if (buffer == NULL) {
+        return -1;
+    }
+
+    //copy the serialized block into the buffer and null terminate it
+    memcpy(buffer, serialized_block, serialized_block_len);
+    buffer[serialized_block_len] = '\0';
+
+    //parse the buffer to extract block fields
+    char *cursor = buffer;
+    int characters_read = 0; // count so we can move the cursor forward after each sscanf
+    size_t expected_data_count = 0; //explected number of messages in the block
+
+    //start cursor at buffer start, extract the index field
+    sscanf(cursor,"index=%" SCNu64 "\n%n", &block->index, &characters_read);
+    cursor += characters_read;//move cursor forward to timestamp field
+
+    // extract timestamp
+    sscanf(cursor, "timestamp=%20[^\n]\n%n", block->timestamp, &characters_read);
+    cursor += characters_read; //move cursor forward to prev_hash field
+
+    // extract previous hash
+    sscanf( cursor, "prev_hash=%64[^\n]\n%n", block->prev_hash, &characters_read);
+    cursor += characters_read;//move cursor forward to data_count field
+
+    // extract data_count
+    sscanf(cursor, "data_count=%zu\n%n", &expected_data_count, &characters_read);
+    cursor += characters_read;
+
+    if (expected_data_count > 0) { //check if there are messages to allocate memory for
+        //allocate memory for the data array based on the expected number of messages
+        block->data = malloc(expected_data_count * sizeof(char *));
+        if (block->data == NULL) {
+            free(buffer);
+            return -1;//return error if memory allocation fails
+        }
+    }
+
+    //extract each message from the serialized block
+    for (size_t i = 0; i < expected_data_count; i++) {
+        size_t message_length = 0;
+
+        // extract the message length and data
+        sscanf(cursor,"data=%zu:%n", &message_length,&characters_read);
+        cursor += characters_read;//move forward to the start of the message data
+        
+        //extract the message data index i and allocate memory for it and null terminate it
+        block->data[i] = malloc(message_length + 1);
+        if (block->data[i] == NULL) {
+            free(buffer);
+            free_block_data(block);
+            return -1;
+        }
+
+        // copy the message data into the allocated memory
+        memcpy(block->data[i], cursor, message_length);
+        block->data[i][message_length] = '\0';//null terminate the message string
+        block->data_count++;//increment the data count in the block
+        
+        //move the cursor forward to the next message or the nonce field
+        cursor += message_length;
+        cursor++;
+    }
+
+    //when we reach here, we have extracted all the messages, now we need to extract the nonce and miner address
+    sscanf(cursor, "nonce=%" SCNu64 "\n%n", &block->nonce, &characters_read);
+    cursor += characters_read;
+
+    //extract the miner address
+    sscanf(cursor, "miner_address=%35s", block->miner_address);
+
+    free(buffer);
+
+    //calculate the hash of the block since its not in serialized data
+    if (get_block_hash(block, block->hash) != 0) {
+        free_block_data(block);
+        return -1;
+    }
+
+    return 0;
+}
+
+int validate_next_block(const block_t *block, const block_t *previous, int difficulty){
+    if (block == NULL || previous == NULL) { //if curr or prev block is null return error
+        return -1;
+    }
+
+    // if the index of curr is not one greater than prev return error
+    if (block->index != previous->index + 1) {
+        return -1;
+    }
+
+    //check if the prev hash in current block matches the hash of the previous block
+    if (strcmp(block->prev_hash, previous->hash) != 0) {
+        return -1;
+    }
+
+    //calculate the hash of the current block 
+    char calculated_hash[BLOCK_HASH_SIZE];
+    if (get_block_hash(block, calculated_hash) != 0) {
+        return -1;// Error calculating block hash
+    }
+
+    //compare the calculated hash with the hash stored in the block
+    if (strcmp(calculated_hash, block->hash) != 0) {
+        return -1;
+    }
+
+    //check if the hash meets the difficulty requirement
+    return check_hash_difficulty(block->hash, difficulty);
+}
 /***************Free Functions***************/
 /** Frees the memory allocated for a message list.
  * @param list Pointer to the message list to free.

@@ -5,7 +5,7 @@
 typedef struct{
     char *vanity_prefix;
     int difficulty;
-    char *node;
+    char *config_path;
 } command_input;
 
 
