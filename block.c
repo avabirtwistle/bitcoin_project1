@@ -6,6 +6,11 @@ static int get_block_hash(const block_t *block, char hash_output[BLOCK_HASH_SIZE
 static int resize_blockchain(blockchain_t *chain);
 static int serialize_block_data(const block_t *block, char **serialized_block, size_t *serialized_block_len);
 
+/*
+ * Gets the current time and formats it as a string.
+ * @param timestamp Pointer to the buffer to store the formatted timestamp.
+ * @return 0 on success, -1 on failure.
+ */
 static int get_time(char timestamp[TIMESTAMP_SIZE]) {
     time_t now = time(NULL);
 
@@ -24,7 +29,11 @@ static int get_time(char timestamp[TIMESTAMP_SIZE]) {
 
     return 0; // Success
 }
-/*adds a message to the pending message list*/
+/*adds a message to the pending message list
+ * @param pending Pointer to the pending message list.
+ * @param message The message to add.
+ * @return 0 on success, -1 on failure.
+ */
 int add_pending_message(message_list_t *pending, const char *message) {
     message_node_t *new_message = malloc(sizeof(message_node_t));
     if (new_message == NULL) {
@@ -77,7 +86,10 @@ int initialize_blockchain(blockchain_t *chain) {
     chain->count = 1;
     return 0;
 }
-
+/** Creates a new genesis block.
+ * @param block Pointer to the block to create.
+ * @return 0 on success, -1 on failure.
+ */
 int create_genesis_block(block_t *block) {
     const char genesis_message[] = "Genesis Block";
 
@@ -119,7 +131,10 @@ int create_genesis_block(block_t *block) {
 
     return 0;
 }
-
+/** Resizes the blockchain.
+ * @param chain Pointer to the blockchain to resize.
+ * @return 0 on success, -1 on failure.
+ */
 static int resize_blockchain(blockchain_t *chain) {
     size_t new_capacity = chain->capacity * 2;
 
@@ -132,7 +147,13 @@ static int resize_blockchain(blockchain_t *chain) {
     chain->capacity = new_capacity;
     return 0;
 }
-
+/** Creates a new block from the pending messages.
+ * @param block Pointer to the block to create.
+ * @param prev_block Pointer to the previous block.
+ * @param pending Pointer to the pending message list.
+ * @param miner_address The address of the miner.
+ * @return 0 on success, -1 on failure.
+ */
 int create_pending_block(block_t *block, const block_t *prev_block, const message_list_t *pending, const char *miner_address){
     if (block == NULL || prev_block == NULL || pending == NULL || miner_address == NULL || strlen(miner_address) > ADDRESS_SIZE) {
         return -1;
@@ -304,6 +325,11 @@ int append_block_to_chain(blockchain_t *chain, block_t *block) {
 
 
 /********Mining*********/
+/** Checks if a hash meets the required difficulty.
+ * @param hash The hash to check.
+ * @param difficulty The required difficulty.
+ * @return 1 if the hash meets the difficulty, 0 otherwise.
+ */
 static int check_hash_difficulty(const char *hash, int difficulty) {
     if(difficulty < 0 || difficulty > BLOCK_HASH_SIZE - 1) { //if difficulty is negative or greater than the hash length
         return 0; // Invalid difficulty
@@ -318,6 +344,11 @@ static int check_hash_difficulty(const char *hash, int difficulty) {
     return 1; // Hash meets the difficulty requirement
 }
 
+/** Mines a single block.
+ * @param block Pointer to the block to mine.
+ * @param difficulty The difficulty to mine at.
+ * @return 0 on success, -1 on failure.
+ */
 int mine_one_block(block_t *block, int difficulty){
     if(block == NULL || difficulty < 0) {
         return -1; // Invalid input
@@ -342,15 +373,60 @@ int mine_one_block(block_t *block, int difficulty){
     }
 }
 
-//network related block
+/** Serializes a block for network transmission.
+ * @param block Pointer to the block to serialize.
+ * @param output Pointer to the output buffer.
+ * @param output_length Pointer to the output buffer length.
+ * @return 0 on success, -1 on failure.
+ */
 int serialize_block_for_network(const block_t *block, char **output, size_t *output_length){
     if (block == NULL || output == NULL || output_length == NULL) {
         return -1; // Invalid input
     }
-     serialize_block_data(block, output, output_length);
+    *output = NULL;
+    *output_length = 0;
 
+    char *block_payload = NULL;
+    size_t payload_length = 0;
+
+    if (serialize_block_data(block, &block_payload, &payload_length) != 0) {
+        return -1;
+    }
+
+    FILE *stream = open_memstream(output, output_length);
+    if (stream == NULL) {
+        free(block_payload);
+        return -1;
+    }
+
+    //add the hash to the serialized block for sending over the network
+    if (fprintf(stream, "%s\nhash=%s", block_payload, block->hash) < 0) {
+        fclose(stream);
+        free(block_payload);
+        free(*output);
+        *output = NULL;
+        *output_length = 0;
+        return -1;
+    }
+
+    free(block_payload);
+
+    if (fclose(stream) != 0) {
+        free(*output);
+        *output = NULL;
+        *output_length = 0;
+        return -1;
+    }
+
+    return 0;
 }
 
+/** Deserializes a block from network transmission.
+ * @param serialized_block Pointer to the serialized block.
+ * @param serialized_block_len The length of the serialized block.
+ * @param block Pointer to the block to populate.
+ * @return 0 on success, -1 on failure.
+ */
 int deserialize_block_from_network(const char *serialized_block, size_t serialized_block_len, block_t *block){
     if (serialized_block == NULL || block == NULL) {
         return -1;
@@ -430,47 +506,51 @@ int deserialize_block_from_network(const char *serialized_block, size_t serializ
     cursor += characters_read;
 
     //extract the miner address
-    sscanf(cursor, "miner_address=%35s", block->miner_address);
+    sscanf(cursor, "miner_address=%35s\n%n", block->miner_address, &characters_read);
+    cursor += characters_read;
+
+    //extract the hash sent by the peer
+    sscanf(cursor, "hash=%64s", block->hash);
 
     free(buffer);
-
-    //calculate the hash of the block since its not in serialized data
-    if (get_block_hash(block, block->hash) != 0) {
-        free_block_data(block);
-        return -1;
-    }
 
     return 0;
 }
 
+/** Validates the next block in the blockchain.
+ * @param block Pointer to the current block.
+ * @param previous Pointer to the previous block.
+ * @param difficulty The difficulty to validate against.
+ * @return 1 if the block is valid, 0 otherwise.
+ */
 int validate_next_block(const block_t *block, const block_t *previous, int difficulty){
     if (block == NULL || previous == NULL) { //if curr or prev block is null return error
-        return -1;
+        return 0;
     }
 
     // if the index of curr is not one greater than prev return error
     if (block->index != previous->index + 1) {
-        return -1;
+        return 0;
     }
 
     //check if the prev hash in current block matches the hash of the previous block
     if (strcmp(block->prev_hash, previous->hash) != 0) {
-        return -1;
+        return 0;
     }
 
     //calculate the hash of the current block 
     char calculated_hash[BLOCK_HASH_SIZE];
     if (get_block_hash(block, calculated_hash) != 0) {
-        return -1;// Error calculating block hash
+        return 0;// Error calculating block hash
     }
 
     //compare the calculated hash with the hash stored in the block
     if (strcmp(calculated_hash, block->hash) != 0) {
-        return -1;
+        return 0;
     }
 
     //check if the hash meets the difficulty requirement
-    return check_hash_difficulty(block->hash, difficulty);
+    return check_hash_difficulty(calculated_hash, difficulty);
 }
 /***************Free Functions***************/
 /** Frees the memory allocated for a message list.
