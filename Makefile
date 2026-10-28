@@ -9,12 +9,12 @@ LDFLAGS = -L/opt/homebrew/opt/cjson/lib \
 	-L/opt/homebrew/opt/openssl@3/lib \
 	-L/opt/homebrew/opt/readline/lib
 
-LDLIBS = -lcjson -lcrypto -lreadline
+LDLIBS = -lcjson -lcrypto -lreadline -lpthread
 
 TARGET = blockchain
 
-SOURCES = main.c prefix.c start_up.c block.c 
-HEADERS = prefix.h start_up.h block.h
+SOURCES = main.c prefix.c start_up.c block.c network.c
+HEADERS = prefix.h start_up.h block.h network.h
 
 $(TARGET): $(SOURCES) $(HEADERS)
 	$(CC) $(CFLAGS) $(SOURCES) -o $(TARGET) $(LDFLAGS) $(LDLIBS)
