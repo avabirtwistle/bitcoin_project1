@@ -6,7 +6,11 @@
  * @param config The configuration structure to populate.
  * @return 0 on success, -1 on failure.
  */
-static int load_config(const char *config_path, node_config_t *config){
+int load_node_config(const char *config_path, node_config_t *config){
+    if (config_path == NULL || config == NULL) {
+        return -1;
+    }
+
     memset(config, 0, sizeof(*config)); // Initialize the config structure to zero
     FILE *file = fopen(config_path, "r");
     if (file == NULL) {
@@ -28,14 +32,30 @@ static int load_config(const char *config_path, node_config_t *config){
     }
 
     cJSON *node_id = cJSON_GetObjectItemCaseSensitive(root, "node_id");
+    cJSON *wallet_file = cJSON_GetObjectItemCaseSensitive(root, "wallet_file");
     cJSON *port = cJSON_GetObjectItemCaseSensitive(root, "port");
     cJSON *peers = cJSON_GetObjectItemCaseSensitive(root, "peers");
+
+    if (!cJSON_IsString(node_id) || !cJSON_IsString(wallet_file) ||
+        !cJSON_IsNumber(port) || !cJSON_IsArray(peers) ||
+        port->valueint <= 0 || port->valueint > UINT16_MAX) {
+        cJSON_Delete(root);
+        fprintf(stderr, "Invalid network configuration.\n");
+        return -1;
+    }
 
     snprintf( // copy the node id string into the config struct
         config->node_id,
         sizeof(config->node_id),
         "%s",
         node_id->valuestring
+    );
+
+    snprintf(
+        config->wallet_file,
+        sizeof(config->wallet_file),
+        "%s",
+        wallet_file->valuestring
     );
 
     config->port = port->valueint;
@@ -54,7 +74,14 @@ static int load_config(const char *config_path, node_config_t *config){
         cJSON *peer = cJSON_GetArrayItem(peers, i);
 
         // Get the host and port of each peer from the URL
-        sscanf(peer->valuestring, "http://%255[^:]:%d", config->peers[i].host, &config->peers[i].port);
+        if (!cJSON_IsString(peer) ||
+            sscanf(peer->valuestring, "http://%255[^:]:%d",
+                config->peers[i].host, &config->peers[i].port) != 2 ||
+            config->peers[i].port <= 0 || config->peers[i].port > UINT16_MAX) {
+            cJSON_Delete(root);
+            fprintf(stderr, "Invalid peer configuration.\n");
+            return -1;
+        }
     }
 
     cJSON_Delete(root);
@@ -129,6 +156,8 @@ static int receive_all(int socket_fd, void *data, size_t length) {
 static void receive_block(network_t *network, int peer_fd) {
     uint32_t network_length;
     int accepted = 0;
+    utxo_set_t updated_utxos = {0};
+    validation_result_t validation_result = VALIDATION_INVALID_STRUCTURE;
 
     // Receive the length of the serialized block from the peer
     if (receive_all(peer_fd, &network_length, sizeof(network_length)) != 0) {
@@ -169,14 +198,44 @@ static void receive_block(network_t *network, int peer_fd) {
     if (network->chain->count > 0) {
         const block_t *previous = &network->chain->blocks[network->chain->count - 1];
 
-        if (validate_next_block(&received_block, previous, network->difficulty) == 1) {
+        if (validate_next_block(&received_block, previous, network->difficulty) != 1) {
+            fprintf(stderr, "Rejected block: invalid header, proof of work or structure.\n");
+        } else if (!validate_block_transactions(
+            &received_block,
+            network->utxos,
+            NULL,
+            &validation_result
+        )) {
+            fprintf(
+                stderr,
+                "Rejected block: %s.\n",
+                validation_result_message(validation_result)
+            );
+        } else if (copy_utxo_set(&updated_utxos, network->utxos) == 0 &&
+                   apply_block_to_utxo_set(&updated_utxos, &received_block) == 0) {
             if (append_block_to_chain(network->chain, &received_block) == 0) {
+                free_utxo_set(network->utxos);
+                *network->utxos = updated_utxos;
+                memset(&updated_utxos, 0, sizeof(updated_utxos));
+
+                const block_t *accepted_block =
+                    &network->chain->blocks[network->chain->count - 1];
+
+                remove_confirmed_transactions(
+                    network->mempool,
+                    accepted_block->transactions,
+                    accepted_block->transaction_count
+                );
+
                 accepted = 1;
             }
+        } else {
+            fprintf(stderr, "Rejected block: failed to construct the updated UTXO set.\n");
         }
     }
 
     pthread_mutex_unlock(network->chain_lock);
+    free_utxo_set(&updated_utxos);
 
     if (accepted) {
         printf("\n[%s] Accepted received block.\n> ", network->node_id);
@@ -188,11 +247,84 @@ static void receive_block(network_t *network, int peer_fd) {
     }
 }
 
-/** Listens for incoming blocks from peers.
+/** Receives and validates a transaction from a peer.
+ * @param network Pointer to the network.
+ * @param peer_fd The file descriptor of the peer.
+ */
+static void receive_transaction(network_t *network, int peer_fd) {
+    uint32_t network_length = 0;
+    transaction_t transaction = {0};
+    validation_result_t validation_result = VALIDATION_INVALID_STRUCTURE;
+    int accepted = 0;
+
+    if (receive_all(peer_fd, &network_length, sizeof(network_length)) != 0) {
+        fprintf(stderr, "Warning: failed to receive transaction length.\n");
+        return;
+    }
+
+    size_t serialized_length = ntohl(network_length);
+    char *serialized = malloc(serialized_length + 1);
+    if (serialized == NULL) {
+        return;
+    }
+
+    if (receive_all(peer_fd, serialized, serialized_length) != 0) {
+        fprintf(stderr, "Warning: failed to receive complete transaction.\n");
+        free(serialized);
+        return;
+    }
+
+    serialized[serialized_length] = '\0';
+
+    if (deserialize_transaction_from_network(
+        serialized,
+        serialized_length,
+        &transaction
+    ) != 0) {
+        fprintf(stderr, "Rejected transaction: deserialization failed.\n");
+        free(serialized);
+        return;
+    }
+    free(serialized);
+
+    pthread_mutex_lock(network->chain_lock);
+
+    if (validate_transaction_for_mempool(
+        &transaction,
+        network->utxos,
+        network->mempool,
+        NULL,
+        &validation_result
+    ) && add_pending_transaction(network->mempool, &transaction) == 0) {
+        accepted = 1;
+    }
+
+    pthread_mutex_unlock(network->chain_lock);
+
+    if (accepted) {
+        printf(
+            "\n[%s] Accepted transaction %s.\n> ",
+            network->node_id,
+            transaction.txid
+        );
+    } else {
+        fprintf(
+            stderr,
+            "\n[%s] Rejected transaction: %s.\n> ",
+            network->node_id,
+            validation_result_message(validation_result)
+        );
+    }
+    fflush(stdout);
+
+    free_transaction(&transaction);
+}
+
+/** Listens for incoming blocks and transactions from peers.
  * @param argument The network structure.
  * @return NULL.
  */
-static void *listen_for_blocks(void *argument){
+static void *listen_for_messages(void *argument){
     network_t *network = argument;
 
     while (network->running) {
@@ -205,7 +337,18 @@ static void *listen_for_blocks(void *argument){
             continue;
         }
 
-        receive_block(network, peer_fd);
+        uint8_t message_type = 0;
+
+        if (receive_all(peer_fd, &message_type, sizeof(message_type)) != 0) {
+            fprintf(stderr, "Warning: failed to receive message type.\n");
+        } else if (message_type == NETWORK_MESSAGE_BLOCK) {
+            receive_block(network, peer_fd);
+        } else if (message_type == NETWORK_MESSAGE_TRANSACTION) {
+            receive_transaction(network, peer_fd);
+        } else {
+            fprintf(stderr, "Warning: received unknown network message.\n");
+        }
+
         close(peer_fd);
     }
 
@@ -220,10 +363,11 @@ static void *listen_for_blocks(void *argument){
  * @param difficulty The difficulty of the network.
  * @return 0 on success, -1 on failure.
  */
-int network_start(network_t *network, const char *config_path, blockchain_t *chain, pthread_mutex_t *chain_lock, int difficulty){
+int network_start(network_t *network, const char *config_path, blockchain_t *chain, utxo_set_t *utxos, mempool_t *mempool, pthread_mutex_t *chain_lock, int difficulty){
     node_config_t config;
 
-    if (load_config(config_path, &config) != 0) {
+    if (network == NULL || chain == NULL || utxos == NULL || mempool == NULL ||
+        chain_lock == NULL || load_node_config(config_path, &config) != 0) {
         return -1;
     }
 
@@ -232,6 +376,8 @@ int network_start(network_t *network, const char *config_path, blockchain_t *cha
     network->port = config.port;
     network->peer_count = config.peer_count;
     network->chain = chain;
+    network->utxos = utxos;
+    network->mempool = mempool;
     network->chain_lock = chain_lock;
     network->difficulty = difficulty;
 
@@ -272,7 +418,7 @@ int network_start(network_t *network, const char *config_path, blockchain_t *cha
 
     network->running = 1;
 
-    if (pthread_create(&network->listener_thread, NULL, listen_for_blocks, network) != 0) {
+    if (pthread_create(&network->listener_thread, NULL, listen_for_messages, network) != 0) {
         fprintf(stderr, "Failed to create network listener thread.\n");
         close(network->listen_fd);
         network->running = 0;
@@ -283,22 +429,25 @@ int network_start(network_t *network, const char *config_path, blockchain_t *cha
     return 0;
 }
 
-/** Broadcasts a block to all peers in the network.
- * @param network Pointer to the network.
- * @param block Pointer to the block to broadcast.
- * @return 0 on success, -1 on failure.
+/*
+ * Sends one typed, length-prefixed payload to every configured peer.
+ * @return Number of peers reached, or -1 for invalid input.
  */
-int network_broadcast_block(network_t *network, const block_t *block){
-    char *serialized = NULL;
-    size_t serialized_length = 0;
-
-    if (serialize_block_for_network(block, &serialized, &serialized_length) != 0) {
+static int broadcast_payload(
+    network_t *network,
+    uint8_t message_type,
+    const char *serialized,
+    size_t serialized_length,
+    const char *description
+) {
+    if (network == NULL || serialized == NULL || description == NULL ||
+        serialized_length > UINT32_MAX) {
         return -1;
     }
 
     uint32_t network_length = htonl((uint32_t)serialized_length);
+    int peers_reached = 0;
 
-    //connect to each configured peer and send the mined block
     for (size_t i = 0; i < network->peer_count; i++) {
         int peer_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (peer_fd < 0) {
@@ -317,16 +466,78 @@ int network_broadcast_block(network_t *network, const block_t *block){
             continue;
         }
 
-        if (send_all(peer_fd, &network_length, sizeof(network_length)) != 0 ||
+        if (send_all(peer_fd, &message_type, sizeof(message_type)) != 0 ||
+            send_all(peer_fd, &network_length, sizeof(network_length)) != 0 ||
             send_all(peer_fd, serialized, serialized_length) != 0) {
-            fprintf(stderr, "Warning: failed to send block to %s:%d.\n", network->peers[i].host, network->peers[i].port);
+            fprintf(
+                stderr,
+                "Warning: failed to send %s to %s:%d.\n",
+                description,
+                network->peers[i].host,
+                network->peers[i].port
+            );
+        } else {
+            peers_reached++;
         }
 
         close(peer_fd);
     }
 
+    return peers_reached;
+}
+
+/** Broadcasts a block to all peers in the network.
+ * @param network Pointer to the network.
+ * @param block Pointer to the block to broadcast.
+ * @return 0 on success, -1 on serialization failure.
+ */
+int network_broadcast_block(network_t *network, const block_t *block){
+    char *serialized = NULL;
+    size_t serialized_length = 0;
+
+    if (serialize_block_for_network(block, &serialized, &serialized_length) != 0) {
+        return -1;
+    }
+
+    int broadcast_result = broadcast_payload(
+        network,
+        NETWORK_MESSAGE_BLOCK,
+        serialized,
+        serialized_length,
+        "block"
+    );
+
     free(serialized);
-    return 0;
+    return broadcast_result < 0 ? -1 : 0;
+}
+
+/** Broadcasts a transaction to all peers in the network.
+ * @param network Pointer to the network.
+ * @param transaction Pointer to the transaction to broadcast.
+ * @return Number of peers reached, or -1 on serialization failure.
+ */
+int network_broadcast_transaction(network_t *network, const transaction_t *transaction) {
+    char *serialized = NULL;
+    size_t serialized_length = 0;
+
+    if (serialize_transaction_for_network(
+        transaction,
+        &serialized,
+        &serialized_length
+    ) != 0) {
+        return -1;
+    }
+
+    int peers_reached = broadcast_payload(
+        network,
+        NETWORK_MESSAGE_TRANSACTION,
+        serialized,
+        serialized_length,
+        "transaction"
+    );
+
+    free(serialized);
+    return peers_reached;
 }
 
 /** Stops the network.

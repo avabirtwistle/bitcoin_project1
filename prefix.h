@@ -33,6 +33,7 @@ int find_wallet(FILE *file,  wallet_t *keypair);
 int save_wallet(FILE *file, const wallet_t *wallet);
 int generate_keypair(wallet_t *wallet);
 int public_key_to_address(const uint8_t public_key[33], char address[36]);
+int is_valid_address(const char *address);
 int address_matches_prefix(const char *address, const char *prefix);
 int generate_vanity_wallet(wallet_t *wallet, const char *prefix);
 

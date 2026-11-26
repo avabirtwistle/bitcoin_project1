@@ -3,6 +3,7 @@
 //helpers 
 static int hash_public_key(const uint8_t public_key[PUBLIC_KEY_SIZE], uint8_t public_key_hash[PUBLIC_KEY_HASH_SIZE]);
 static int base58_encode(const uint8_t *input, char *output);
+static int base58_decode_address(const char *input, uint8_t output[PAYLOAD_SIZE]);
 /**
  * Finds a wallet in the specified file.
  * @param filename The name of the file to search.
@@ -10,6 +11,10 @@ static int base58_encode(const uint8_t *input, char *output);
  * @return 0 if successful, -1 if error or if cant be found.
  */
 int find_wallet(FILE *file, wallet_t *keypair) {
+    if (file == NULL || keypair == NULL) {
+        return -1;
+    }
+
     char buffer[JSON_BUFFER_SIZE];
 
     // Read the entire file into the buffer
@@ -17,7 +22,6 @@ int find_wallet(FILE *file, wallet_t *keypair) {
 
     // Check for read errors or if the file is too large
     if (ferror(file) || (n == sizeof(buffer) - 1 && fgetc(file) != EOF)) {
-        fclose(file);
         return -1;
     }
 
@@ -42,9 +46,35 @@ int find_wallet(FILE *file, wallet_t *keypair) {
     }
 
     // Convert hex strings to byte arrays and copy the address string
-    OPENSSL_hexstr2buf_ex(keypair->private_key, PRIVATE_KEY_SIZE, NULL,private_key->valuestring, '\0');;
-    OPENSSL_hexstr2buf_ex(keypair->public_key, PUBLIC_KEY_SIZE, NULL, public_key->valuestring, '\0');
-    strncpy(keypair->address, address->valuestring, ADDRESS_SIZE);
+    size_t private_key_length = 0;
+    size_t public_key_length = 0;
+    char calculated_address[ADDRESS_SIZE + 1];
+
+    memset(keypair, 0, sizeof(*keypair));
+
+    if (OPENSSL_hexstr2buf_ex(
+        keypair->private_key,
+        PRIVATE_KEY_SIZE,
+        &private_key_length,
+        private_key->valuestring,
+        '\0'
+    ) != 1 || private_key_length != PRIVATE_KEY_SIZE ||
+        OPENSSL_hexstr2buf_ex(
+            keypair->public_key,
+            PUBLIC_KEY_SIZE,
+            &public_key_length,
+            public_key->valuestring,
+            '\0'
+        ) != 1 || public_key_length != PUBLIC_KEY_SIZE ||
+        strlen(address->valuestring) > ADDRESS_SIZE ||
+        public_key_to_address(keypair->public_key, calculated_address) != 0 ||
+        strcmp(calculated_address, address->valuestring) != 0) {
+        cJSON_Delete(root);
+        memset(keypair, 0, sizeof(*keypair));
+        return -1;
+    }
+
+    strcpy(keypair->address, address->valuestring);
 
     cJSON_Delete(root);
     return 0; // Success
@@ -224,6 +254,82 @@ int public_key_to_address(const uint8_t public_key[PUBLIC_KEY_SIZE], char addres
     }
 
     return 0;
+}
+
+/*
+ * Decodes a Base58Check address into its 25-byte payload.
+ * @param input Base58Check address to decode.
+ * @param output Buffer receiving the decoded payload.
+ * @return 0 on success, -1 on failure.
+ */
+static int base58_decode_address(const char *input, uint8_t output[PAYLOAD_SIZE]) {
+    const char alphabet[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    BIGNUM *number = NULL;
+    int result = -1;
+
+    if (input == NULL || output == NULL) {
+        return -1;
+    }
+
+    number = BN_new();
+    if (number == NULL) {
+        return -1;
+    }
+
+    BN_zero(number);
+
+    for (size_t i = 0; input[i] != '\0'; i++) {
+        const char *position = strchr(alphabet, input[i]);
+        if (position == NULL || BN_mul_word(number, 58) != 1 ||
+            BN_add_word(number, (BN_ULONG)(position - alphabet)) != 1) {
+            goto cleanup;
+        }
+    }
+
+    if (BN_num_bytes(number) > PAYLOAD_SIZE ||
+        BN_bn2binpad(number, output, PAYLOAD_SIZE) != PAYLOAD_SIZE) {
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    BN_free(number);
+    return result;
+}
+
+/*
+ * Checks the version, checksum and canonical Base58 encoding of an address.
+ * @param address Address to validate.
+ * @return 1 if valid, 0 otherwise.
+ */
+int is_valid_address(const char *address) {
+    if (address == NULL) {
+        return 0;
+    }
+
+    size_t address_length = strlen(address);
+    if (address_length < 26 || address_length > ADDRESS_SIZE) {
+        return 0;
+    }
+
+    uint8_t payload[PAYLOAD_SIZE];
+    uint8_t first_hash[HASH_SIZE];
+    uint8_t second_hash[HASH_SIZE];
+    char canonical_address[ADDRESS_SIZE + 1];
+    size_t bytes_written = 0;
+
+    if (base58_decode_address(address, payload) != 0 || payload[0] != 0x00 ||
+        EVP_Q_digest(NULL, "SHA256", NULL, payload, VERSIONED_HASH_SIZE,
+            first_hash, &bytes_written) != 1 || bytes_written != HASH_SIZE ||
+        EVP_Q_digest(NULL, "SHA256", NULL, first_hash, HASH_SIZE,
+            second_hash, &bytes_written) != 1 || bytes_written != HASH_SIZE ||
+        memcmp(payload + VERSIONED_HASH_SIZE, second_hash, CHECKSUM_SIZE) != 0 ||
+        base58_encode(payload, canonical_address) != 0) {
+        return 0;
+    }
+
+    return strcmp(address, canonical_address) == 0;
 }
 
 /* 

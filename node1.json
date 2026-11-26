@@ -1,5 +1,6 @@
 {
   "node_id": "Node1",
+  "wallet_file": "keypair.json",
   "port": 8001,
   "peers": [
     "http://127.0.0.1:8002",
