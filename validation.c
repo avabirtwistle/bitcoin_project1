@@ -274,28 +274,6 @@ static int mempool_spends_outpoint_before(
     return 0;
 }
 
-/**
- * Checks whether an earlier transaction in a block spends an outpoint.
- * @param block Pointer to the block.
- * @param transaction_index Index of the transaction to check.
- * @param outpoint Pointer to the outpoint to check.
- * @return 1 if an earlier transaction spends the outpoint, 0 otherwise.
- */
-static int block_spends_outpoint_before(
-    const block_t *block,
-    size_t transaction_index,
-    const outpoint_t *outpoint
-) {
-    for (size_t i = 1; i < transaction_index; i++) {
-        for (size_t j = 0; j < block->transactions[i].input_count; j++) {
-            if (outpoints_equal(&block->transactions[i].inputs[j].outpoint, outpoint)) {
-                return 1;
-            }
-        }
-    }
-
-    return 0;
-}
 
 /**
  * Revalidates all pending transactions and totals their fees before mining.
