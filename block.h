@@ -20,6 +20,7 @@
 typedef struct {
     uint64_t index;
     char prev_hash[BLOCK_HASH_SIZE];
+    char merkle_root[BLOCK_HASH_SIZE];
     char timestamp[TIMESTAMP_SIZE];
     transaction_t *transactions;
     size_t transaction_count;
@@ -38,6 +39,7 @@ typedef struct {
 int create_pending_block(block_t *block, const block_t *prev_block, const mempool_t *pending, const char *miner_address, uint64_t total_fees);
 int create_genesis_block(block_t *block);
 int mine_one_block(block_t *block, int difficulty);
+int compute_merkle_root(const transaction_t *transactions, size_t transaction_count, char merkle_root[BLOCK_HASH_SIZE]);
 
 // blockchain
 int initialize_blockchain(blockchain_t *chain);

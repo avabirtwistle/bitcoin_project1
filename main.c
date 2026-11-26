@@ -89,20 +89,21 @@ static void print_address_utxos(const utxo_set_t *utxos, const char *address) {
     printf("Confirmed UTXOs: %zu\n", address_utxo_count);
 }
 
-/*
+/**
  * Loads a node's configured wallet or creates it when it does not exist.
  * Node1 keeps the Assignment 1 vanity wallet. The other nodes use normal
  * secp256k1 keypairs because no additional vanity prefix is required.
+ * @param wallet Pointer to the wallet to load or create.
+ * @param wallet_file Path to the wallet file.
+ * @param vanity_prefix Vanity prefix to use when creating a wallet.
+ * @return 0 on success, -1 on failure.
  */
-static int load_or_create_wallet(
-    wallet_t *wallet,
-    const char *wallet_file,
-    const char *vanity_prefix
-) {
+static int load_or_create_wallet(wallet_t *wallet, const char *wallet_file, const char *vanity_prefix) {
     if (wallet == NULL || wallet_file == NULL || vanity_prefix == NULL) {
         return -1;
     }
 
+    //open the wallet file for reading, if it exists
     FILE *file = fopen(wallet_file, "r");
     if (file != NULL) {
         int result = find_wallet(file, wallet);
@@ -114,34 +115,39 @@ static int load_or_create_wallet(
     }
 
     fprintf(stderr, "Creating wallet %s.\n", wallet_file);
-
+    //generate a new keypair and address, or a vanity wallet for Node1
     if (strcmp(wallet_file, "keypair.json") == 0) {
         if (generate_vanity_wallet(wallet, vanity_prefix) != 0) {
             return -1;
         }
-    } else if (generate_keypair(wallet) != 0 ||
-               public_key_to_address(wallet->public_key, wallet->address) != 0) {
+    } else if (generate_keypair(wallet) != 0 || public_key_to_address(wallet->public_key, wallet->address) != 0) {
         return -1;
     }
 
+    //save the new wallet to the file
     file = fopen(wallet_file, "w");
     if (file == NULL) {
         return -1;
     }
 
+    //save the new wallet to the file
     int save_result = save_wallet(file, wallet);
     fclose(file);
     return save_result;
 }
 
-/*
+/**
  * Parses a non-negative whole-number command argument.
+ * @param text The argument text to parse.
+ * @param amount Pointer to the resulting amount.
+ * @return 0 on success, -1 on failure.
  */
 static int parse_amount(const char *text, uint64_t *amount) {
     if (text == NULL || amount == NULL || text[0] == '\0' || text[0] == '-') {
         return -1;
     }
 
+    // Use strtoull to convert the string to an unsigned long long
     char *end = NULL;
     errno = 0;
     unsigned long long value = strtoull(text, &end, 10);
@@ -154,19 +160,20 @@ static int parse_amount(const char *text, uint64_t *amount) {
     return 0;
 }
 
-/*
+/** 
  * Parses: send <recipient_address> <amount> --fee <fee>
+ * @param command The command string to parse.
+ * @param recipient_address Buffer to store the parsed recipient address.
+ * @param amount Pointer to store the parsed amount.
+ * @param fee Pointer to store the parsed fee.
+ * @return 0 on success, -1 on failure.
  */
-static int parse_send_command(
-    const char *command,
-    char recipient_address[ADDRESS_SIZE + 1],
-    uint64_t *amount,
-    uint64_t *fee
-) {
+static int parse_send_command(const char *command, char recipient_address[ADDRESS_SIZE + 1], uint64_t *amount, uint64_t *fee) {
     char amount_text[32];
     char fee_text[32];
     char extra_character = '\0';
 
+    // Validate input parameters
     int fields = sscanf(
         command,
         "send %35s %31s --fee %31s %c",
@@ -176,54 +183,44 @@ static int parse_send_command(
         &extra_character
     );
 
-    if (fields != 3 || parse_amount(amount_text, amount) != 0 ||
-        parse_amount(fee_text, fee) != 0 || *amount == 0) {
+    // Ensure that exactly three fields were read and that the amount and fee are valid
+    if (fields != 3 || parse_amount(amount_text, amount) != 0 || parse_amount(fee_text, fee) != 0 || *amount == 0) {
         return -1;
     }
 
     return 0;
 }
 
-/*
+/**
  * Creates, validates, stores and broadcasts one wallet payment.
+ * @param command The command string to parse.
+ * @param wallet Pointer to the wallet making the payment.
+ * @param utxos Pointer to the confirmed UTXO set.
+ * @param mempool Pointer to the mempool of pending transactions.
+ * @param chain_lock Pointer to the mutex protecting the blockchain and UTXO set.
+ * @param network Pointer to the network structure for broadcasting.    
  */
-static void handle_send_command(
-    const char *command,
-    wallet_t *wallet,
-    utxo_set_t *utxos,
-    mempool_t *mempool,
-    pthread_mutex_t *chain_lock,
-    network_t *network
-) {
+static void handle_send_command(const char *command,wallet_t *wallet, utxo_set_t *utxos, mempool_t *mempool, pthread_mutex_t *chain_lock, network_t *network) {
     char recipient_address[ADDRESS_SIZE + 1] = {0};
     uint64_t amount = 0;
     uint64_t requested_fee = 0;
 
-    if (parse_send_command(
-        command,
-        recipient_address,
-        &amount,
-        &requested_fee
-    ) != 0 || !is_valid_address(recipient_address)) {
+    // Parse the send command and validate the recipient address
+    if (parse_send_command(command, recipient_address, &amount, &requested_fee ) != 0 || !is_valid_address(recipient_address)) {
         fprintf(stderr, "Usage: send <recipient_address> <amount> --fee <fee>\n");
         return;
     }
 
+    // Create a new transaction and validate it against the current UTXO set and mempool
     transaction_t transaction = {0};
     validation_result_t validation_result = VALIDATION_INVALID_STRUCTURE;
     uint64_t calculated_fee = 0;
 
+    // Lock the chain and UTXO set while creating and validating the transaction
     pthread_mutex_lock(chain_lock);
 
-    int create_result = create_payment_transaction(
-        &transaction,
-        utxos,
-        mempool,
-        wallet,
-        recipient_address,
-        amount,
-        requested_fee
-    );
+    // Create the payment transaction using the wallet, UTXO set, and mempool
+    int create_result = create_payment_transaction(&transaction,utxos, mempool, wallet, recipient_address, amount, requested_fee );
 
     if (create_result == PAYMENT_INSUFFICIENT_FUNDS) {
         pthread_mutex_unlock(chain_lock);
@@ -231,13 +228,8 @@ static void handle_send_command(
         return;
     }
 
-    if (create_result != 0 || !validate_transaction_for_mempool(
-        &transaction,
-        utxos,
-        mempool,
-        &calculated_fee,
-        &validation_result
-    ) || calculated_fee != requested_fee) {
+    // Validate the transaction for the mempool and ensure the calculated fee matches the requested fee
+    if (create_result != 0 || !validate_transaction_for_mempool( &transaction, utxos, mempool, &calculated_fee, &validation_result) || calculated_fee != requested_fee) {
         pthread_mutex_unlock(chain_lock);
         fprintf(
             stderr,
@@ -248,6 +240,7 @@ static void handle_send_command(
         return;
     }
 
+    // Add the transaction to the mempool and unlock the chain and UTXO set
     if (add_pending_transaction(mempool, &transaction) != 0) {
         pthread_mutex_unlock(chain_lock);
         fprintf(stderr, "Transaction rejected: failed to add it to the mempool.\n");
@@ -259,28 +252,27 @@ static void handle_send_command(
 
     int peers_reached = network_broadcast_transaction(network, &transaction);
 
+    // Print the transaction details and the number of peers reached
     printf("Transaction accepted: %s\n", transaction.txid);
     printf("Amount: %" PRIu64 "\n", amount);
     printf("Fee: %" PRIu64 "\n", calculated_fee);
-    printf("Broadcast to %d peer%s.\n",
-        peers_reached < 0 ? 0 : peers_reached,
-        peers_reached == 1 ? "" : "s");
+    printf("Broadcast to %d peer%s.\n", peers_reached < 0 ? 0 : peers_reached, peers_reached == 1 ? "" : "s");
 
     free_transaction(&transaction);
 }
 
-/*
+/** 
  * Revalidates the mempool, mines a candidate and commits its UTXO update.
+ * @param chain Pointer to the blockchain.
+ * @param utxos Pointer to the confirmed UTXO set.
+ * @param mempool Pointer to the mempool of pending transactions.
+ * @param chain_lock Pointer to the mutex protecting the blockchain and UTXO set.
+ * @param network Pointer to the network structure for broadcasting.
+ * @param wallet Pointer to the wallet receiving the coinbase reward.
+ * @param difficulty The current network difficulty.
+ * 
  */
-static void handle_mine_command(
-    blockchain_t *chain,
-    utxo_set_t *utxos,
-    mempool_t *mempool,
-    pthread_mutex_t *chain_lock,
-    network_t *network,
-    const wallet_t *wallet,
-    int difficulty
-) {
+static void handle_mine_command(blockchain_t *chain, utxo_set_t *utxos, mempool_t *mempool,pthread_mutex_t *chain_lock, network_t *network, const wallet_t *wallet, int difficulty) {
     block_t new_block = {0};
     utxo_set_t updated_utxos = {0};
     validation_result_t validation_result = VALIDATION_INVALID_STRUCTURE;
@@ -290,33 +282,21 @@ static void handle_mine_command(
     pthread_mutex_lock(chain_lock);
     const block_t *previous_block = &chain->blocks[chain->count - 1];
 
-    if (!calculate_mempool_fees(
-        mempool,
-        utxos,
-        &total_fees,
-        &validation_result
-    )) {
+    // Revalidate the mempool and calculate the total fees before mining
+    if (!calculate_mempool_fees(mempool, utxos, &total_fees, &validation_result)) {
         pthread_mutex_unlock(chain_lock);
-        fprintf(
-            stderr,
-            "Cannot mine invalid mempool: %s.\n",
-            validation_result_message(validation_result)
-        );
+        fprintf(stderr,"Cannot mine invalid mempool: %s.\n", validation_result_message(validation_result));
         return;
     }
 
-    if (create_pending_block(
-        &new_block,
-        previous_block,
-        mempool,
-        wallet->address,
-        total_fees
-    ) != 0) {
+    // Create a new pending block with the validated transactions and total fees
+    if (create_pending_block(&new_block,previous_block,mempool,wallet->address,total_fees) != 0) {
         pthread_mutex_unlock(chain_lock);
         fprintf(stderr, "Failed to create block.\n");
         return;
     }
 
+    // Mine the new block and validate it against the previous block and network difficulty
     if (mine_one_block(&new_block, difficulty) != 0) {
         pthread_mutex_unlock(chain_lock);
         fprintf(stderr, "Failed to mine block.\n");
@@ -324,24 +304,21 @@ static void handle_mine_command(
         return;
     }
 
+    // Validate the mined block and ensure the total fees match the calculated fees
     uint64_t validated_fees = 0;
-    if (validate_next_block(&new_block, previous_block, difficulty) != 1 ||
-        !validate_block_transactions(
+    if (validate_next_block(&new_block, previous_block, difficulty) != 1 ||!validate_block_transactions(
             &new_block,
             utxos,
             &validated_fees,
             &validation_result
         ) || validated_fees != total_fees) {
         pthread_mutex_unlock(chain_lock);
-        fprintf(
-            stderr,
-            "Mined block failed validation: %s.\n",
-            validation_result_message(validation_result)
-        );
+        fprintf(stderr, "Mined block failed validation: %s.\n", validation_result_message(validation_result));
         free_block_data(&new_block);
         return;
     }
 
+    // Apply the mined block to a copy of the UTXO set and commit it to the blockchain
     if (copy_utxo_set(&updated_utxos, utxos) != 0 ||
         apply_block_to_utxo_set(&updated_utxos, &new_block) != 0) {
         pthread_mutex_unlock(chain_lock);
@@ -351,6 +328,7 @@ static void handle_mine_command(
         return;
     }
 
+    // Append the mined block to the blockchain and commit the updated UTXO set
     if (append_block_to_chain(chain, &new_block) != 0) {
         pthread_mutex_unlock(chain_lock);
         fprintf(stderr, "Failed to append block.\n");
@@ -362,15 +340,12 @@ static void handle_mine_command(
     //append_block_to_chain moved new_block into the chain
     block_t mined_block = chain->blocks[chain->count - 1];
 
+    // Commit the updated UTXO set and remove confirmed transactions from the mempool
     free_utxo_set(utxos);
     *utxos = updated_utxos;
     memset(&updated_utxos, 0, sizeof(updated_utxos));
 
-    remove_confirmed_transactions(
-        mempool,
-        mined_block.transactions,
-        mined_block.transaction_count
-    );
+    remove_confirmed_transactions(mempool, mined_block.transactions, mined_block.transaction_count);
     pthread_mutex_unlock(chain_lock);
 
     printf("Block mined successfully.\n");

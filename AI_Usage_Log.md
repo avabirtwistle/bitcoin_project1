@@ -44,3 +44,6 @@ I was not familiar with the OPENSSL libraries that were needed to complete this 
 ## Testing
 
 After making changes, I compiled the program with warnings enabled and tested it locally. I tested vanity address generation, pending messages, mining at different difficulties, communication between three nodes, offline-peer handling, block validation, and the expected same-height fork limitation.
+
+
+I used Codex to review my transaction, mempool, UTXO, and networking code. It helped me find errors, add missing validation checks, and compare my work with the assignment requirements. This was helpful for figuring out if I missed anything. I also used commenting though copilot.

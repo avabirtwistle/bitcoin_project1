@@ -136,20 +136,16 @@ static int transactions_spend_outpoint(
     return 0;
 }
 
-/*
+/**
  * Checks whether a pending transaction conflicts with a confirmed spend.
+ * @param transaction Pointer to the pending transaction.
+ * @param confirmed_transactions Pointer to the confirmed transaction array.
+ * @param confirmed_count Number of confirmed transactions.
+ * @return 1 if the pending transaction conflicts, 0 otherwise.
  */
-static int transaction_conflicts_with_block(
-    const transaction_t *transaction,
-    const transaction_t *confirmed_transactions,
-    size_t confirmed_count
-) {
+static int transaction_conflicts_with_block(const transaction_t *transaction, const transaction_t *confirmed_transactions, size_t confirmed_count) {
     for (size_t i = 0; i < transaction->input_count; i++) {
-        if (transactions_spend_outpoint(
-            confirmed_transactions,
-            confirmed_count,
-            &transaction->inputs[i].outpoint
-        )) {
+        if (transactions_spend_outpoint(confirmed_transactions, confirmed_count, &transaction->inputs[i].outpoint)) {
             return 1;
         }
     }
@@ -157,7 +153,7 @@ static int transaction_conflicts_with_block(
     return 0;
 }
 
-/*
+/**
  * Removes confirmed transactions and transactions conflicting with the block.
  * @param mempool Pointer to the mempool.
  * @param transactions Pointer to the confirmed transaction array.
@@ -171,6 +167,7 @@ void remove_confirmed_transactions(mempool_t *mempool, const transaction_t *tran
     transaction_node_t *current = mempool->head;
     transaction_node_t *previous = NULL;
 
+    // Iterate through the mempool and remove confirmed or conflicting transactions
     while (current != NULL) {
         transaction_node_t *next = current->next;
 
@@ -190,6 +187,7 @@ void remove_confirmed_transactions(mempool_t *mempool, const transaction_t *tran
                 mempool->tail = previous;
             }
 
+            // Free the transaction and the node
             free_transaction(&current->transaction);
             free(current);
             mempool->count--;
@@ -201,7 +199,7 @@ void remove_confirmed_transactions(mempool_t *mempool, const transaction_t *tran
     }
 }
 
-/*
+/**
  * Frees all transactions and nodes in a mempool.
  * @param mempool Pointer to the mempool.
  */
@@ -212,6 +210,7 @@ void free_mempool(mempool_t *mempool) {
 
     transaction_node_t *current = mempool->head;
 
+    // Free each transaction node and its associated transaction
     while (current != NULL) {
         transaction_node_t *next = current->next;
         free_transaction(&current->transaction);

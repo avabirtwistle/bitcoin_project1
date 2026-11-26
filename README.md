@@ -1,6 +1,6 @@
-# ECE 496C / 519C Assignment 1
+# ECE 496C / 519C Assignment 2
 
-This project implements a Bitcoin Legacy vanity address generator, an in-memory proof-of-work blockchain and a three-node raw TCP network.
+Simple UTXO currency, mempool management, and optional Merkle-root block hashing.
 
 ## Setup
 
@@ -10,112 +10,186 @@ Install the required libraries on macOS:
 brew install cjson openssl@3 readline
 ```
 
-Build the program:
+Build the program from the project directory:
 
 ```sh
 make
 ```
 
-The saved `keypair.json` contains the pre-computed vanity address and is shared by all three local nodes.
+Each node loads its own wallet from its config file:
+
+| Node  | Config        | Wallet file      |
+|-------|---------------|------------------|
+| Node1 | `node1.json`  | `keypair.json`   |
+| Node2 | `node2.json`  | `keypair2.json`  |
+| Node3 | `node3.json`  | `keypair3.json`  |
+
+`keypair.json` is the Assignment 1 vanity address (prefix `AVA`). Node2 and Node3 use separate keypairs (vanity prefix not required).
 
 ## Run the three nodes
 
-Open three terminals in the project directory and run one command in each terminal.
-
-Terminal 1:
+Open three terminals in the project directory:
 
 ```sh
 ./blockchain --config node1.json --vanity-prefix AVA --difficulty 4
-```
-
-Terminal 2:
-
-```sh
 ./blockchain --config node2.json --vanity-prefix AVA --difficulty 4
-```
-
-Terminal 3:
-
-```sh
 ./blockchain --config node3.json --vanity-prefix AVA --difficulty 4
 ```
 
-Available commands:
+The chain starts with no coins. All coins come from coinbase rewards, so mine a block before sending.
+
+## CLI commands
 
 ```text
-msg <text>  Add a local pending message
-mine        Mine one block and broadcast it to both peers
-exit        Stop the node
+mine
+send <recipient_address> <amount> --fee <fee>
+balance
+utxos
+mempool
+exit
 ```
 
-If a configured peer is offline, the mining node prints a warning and continues running.
+- `mine` — builds a block from the local mempool, prepends a coinbase (50 + fees), finds a PoW nonce, appends the block, updates the UTXO set, clears confirmed mempool txs, and broadcasts the block.
+- `send <address> <amount> --fee <fee>` — selects confirmed unreserved UTXOs, creates a payment with a change output when needed, signs it, validates it, adds it to the mempool, and broadcasts it.
+- `balance` — prints this wallet’s confirmed balance.
+- `utxos` — lists this wallet’s confirmed UTXOs.
+- `mempool` — lists pending unconfirmed transactions.
+- `exit` — stops the node.
 
-## Block hashing format
+## Transaction ID serialization
 
-The `hash` field is not included in the hash input. The fields are serialized in this exact order:
+`txid` is the hex-encoded SHA-256 of the transaction serialized **without** scriptSig fields (no signature, no public key).
+
+Exact field order:
+
+```text
+input_count=<n>\n
+prev_txid=<64 hex>\n
+output_index=<u32>\n
+coinbase_height=<u64>\n          # coinbase inputs only
+...                              # repeated for each input
+output_count=<n>\n
+amount=<u64>\n
+recipient_address=<address>\n
+...                              # repeated for each output
+```
+
+Corresponding C formatting:
+
+```c
+"input_count=%zu\n"
+"prev_txid=%s\n"
+"output_index=%" PRIu32 "\n"
+"coinbase_height=%" PRIu64 "\n"   /* coinbase only */
+"output_count=%zu\n"
+"amount=%" PRIu64 "\n"
+"recipient_address=%s\n"
+```
+
+Fee is not a field.  
+`Fee = sum(input amounts) - sum(output amounts)`, and nodes require `Fee >= 0`.
+
+## Block hash serialization
+
+The `hash` field is **not** included in the hash input. Fields are serialized in this order:
 
 1. `index`
 2. `timestamp`
 3. `prev_hash`
-4. `data_count`
-5. Each string in `data`, in its original order
-6. `nonce`
-7. `miner_address`
+4. `merkle_root` (replaces the old txid list)
+5. `nonce`
+6. `miner_address`
 
-The exact formatting string is:
+Exact format:
 
 ```text
 index=<uint64>\n
 timestamp=<timestamp>\n
 prev_hash=<64-character hash>\n
-data_count=<number of messages>\n
-data=<message byte length>:<message>\n    repeated once for each message
+merkle_root=<64-character hash>\n
 nonce=<uint64>\n
 miner_address=<address>
 ```
 
-The corresponding C formatting is:
+Corresponding C formatting:
 
 ```c
 "index=%" PRIu64 "\n"
 "timestamp=%s\n"
 "prev_hash=%s\n"
-"data_count=%zu\n"
-
-"data=%zu:%s\n"       /* repeated for every message */
-
+"merkle_root=%s\n"
 "nonce=%" PRIu64 "\n"
 "miner_address=%s"
 ```
 
-SHA-256 is calculated over the exact serialized bytes. The resulting hexadecimal hash is stored in the block after hashing.
+SHA-256 is calculated over those exact serialized bytes. The resulting hex digest is stored as the block `hash`.
 
-## Received block validation
+## Merkle root (bonus)
 
-A received block is appended only when all four checks pass:
+Every mined block stores a `merkle_root` in the header. PoW hashes that root instead of listing every txid.
 
-1. Its payload is hashed again and the result equals its transmitted `hash`.
-2. The recalculated hash has the required number of leading zeroes.
-3. Its `prev_hash` equals the current local tip hash.
-4. Its `index` equals the current local tip index plus one.
+How it is computed:
 
-Received blocks are not forwarded because every node is directly connected to the other two nodes.
+- Leaves are the raw 32-byte digests decoded from each transaction’s hex `txid`, in block order.
+- Parents are `SHA-256(left || right)`.
+- If a level has an odd number of hashes, the last hash is duplicated.
+- An empty transaction list (genesis) uses a 64-character all-zero root.
 
-## Fork demonstration
+On receive, a peer recomputes the root from the block’s transactions and rejects the block if it does not match the header `merkle_root`.
 
-Restart all three nodes with difficulty 6:
+## Network: broadcast and receive
 
-```sh
-./blockchain --config node1.json --vanity-prefix AVA --difficulty 6
-./blockchain --config node2.json --vanity-prefix AVA --difficulty 6
-./blockchain --config node3.json --vanity-prefix AVA --difficulty 6
-```
+Nodes talk over raw TCP using typed, length-prefixed messages.
 
-First add different messages so the two candidate blocks cannot be identical:
+### Transactions
+
+1. `send` creates and signs a transaction.
+2. The node validates it with the four mempool checks, then adds it locally.
+3. The transaction is broadcast to configured peers.
+4. A peer deserializes it, runs the same checks against its own UTXO set and mempool, then either accepts it into its mempool or rejects it and logs the reason (without crashing).
+
+### Blocks
+
+1. `mine` builds the block (coinbase first), computes the Merkle root, finds a valid nonce, appends the block, updates UTXOs, and removes confirmed txs from the mempool.
+2. The full block is broadcast to peers.
+3. A peer validates:
+   - header / previous hash / index / PoW
+   - Merkle root matches included transactions
+   - first tx is the only coinbase; coinbase reward ≤ 50 + fees
+   - every other tx passes Checks 1–4, with no double-spent outpoint in the block
+4. On accept: append block, update UTXO set, remove those txs from the mempool.
+5. On reject: log the reason and keep running.
+
+If a peer is offline, the sender prints a warning and continues.
+
+Consensus remains **First-Valid-Block-Wins**. Competing same-height blocks are not reconciled; there is no most-work reorg.
+
+## Validation summary
+
+Before accepting a normal transaction into the mempool or a block:
+
+1. **Existence** — each input outpoint exists in the confirmed UTXO set (not mempool-only).
+2. **Unspent** — not already spent in the UTXO set or reserved by another mempool tx; no duplicate inputs in the same tx.
+3. **Authorization** — public key hashes to the locked address; ECDSA signature over the txid is valid.
+4. **Conservation** — `sum(inputs) >= sum(outputs)`; all output amounts are positive.
+
+Coinbase transactions are exempt from Checks 1–4. They use a zeroed outpoint, include the block height for uniqueness, and pay `50 + fees` to the miner address.
+
+## Example happy path
 
 ```text
-Node2> msg fork block from Node2
-Node3> msg fork block from Node3
+Node1> mine
+Node1> balance
+
+Node1> send <Node2_address> 20 --fee 1
+Node2> mempool
+Node3> mempool
+
+Node1> mine
+Node1> balance
+Node1> utxos
+Node2> balance
+Node2> utxos
 ```
 
-Then enter `mine` on Node2 and Node3 at approximately the same time. Each node mines and appends its own block before processing the competing block. Each then rejects the other block because it conflicts at the same height. This demonstrates the required First-Valid-Block-Wins fork limitation. No most-work fork resolution is implemented.
+Then attempt a double spend of the same UTXO and a transaction with an invalid signature; both should be rejected with a logged reason.
